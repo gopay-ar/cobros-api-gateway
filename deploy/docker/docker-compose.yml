@@ -1,0 +1,62 @@
+# docker-compose.yml — API gateway de cobros-platform + Redis.
+#
+#   docker compose -f deploy/docker/docker-compose.yml up -d --build
+#
+# cobros-platform tiene que estar levantado antes (su compose crea la red
+# cobros-platform_default): el gateway se une a esa red y llega a la API por
+# el nombre del servicio, http://api:8080. Si cobros corre fuera de Docker,
+# usar `make run` (gateway local) o cambiar COBROS_API_URL y la red.
+
+# Nombre de proyecto explícito: sin él, Compose usa el nombre del directorio
+# ("docker") y comparte contenedores y volúmenes con otros proyectos cuyo
+# compose también vive en una carpeta docker/.
+name: api-gateway-cobros
+
+services:
+
+  redis:
+    image: redis:7-alpine
+    # Solo estado de rate limit: no hace falta persistir a disco.
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    ports:
+      - "${REDIS_HOST_PORT:-6379}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  gateway:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile
+    environment:
+      GATEWAY_PORT:   ":8000"
+      COBROS_API_URL: "${COBROS_API_URL:-http://api:8080}"
+      REDIS_URL:      "redis://redis:6379/0"
+      # El mismo JWT_SECRET que cobros-platform: el gateway valida el token
+      # para contar el rate limit por tenant.
+      JWT_SECRET:     "${JWT_SECRET:-change-me-in-production-needs-32-chars!!}"
+      # CIDR de los balanceadores delante del gateway (vacío en local).
+      TRUSTED_PROXIES:      "${TRUSTED_PROXIES:-}"
+      RATE_LIMIT_FAIL_OPEN: "${RATE_LIMIT_FAIL_OPEN:-true}"
+    networks:
+      - default
+      - cobros
+    ports:
+      - "8000:8000"
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O- http://localhost:8000/gateway/health/live || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+networks:
+  # La red del compose de cobros-platform (proyecto "cobros-platform").
+  cobros:
+    external: true
+    name: ${COBROS_NETWORK:-cobros-platform_default}
