@@ -15,7 +15,21 @@ type Limit struct {
 	Period time.Duration
 }
 
-func (l Limit) String() string { return fmt.Sprintf("%d/%s", l.Count, l.Period) }
+// String usa el mismo formato que ParseLimit: "10/15m", no "10/15m0s".
+func (l Limit) String() string { return fmt.Sprintf("%d/%s", l.Count, shortDuration(l.Period)) }
+
+// shortDuration quita los ceros finales de time.Duration.String:
+// 15m0s → 15m, 1h0m0s → 1h, 1h30m0s → 1h30m.
+func shortDuration(d time.Duration) string {
+	s := d.String()
+	if strings.HasSuffix(s, "m0s") {
+		s = strings.TrimSuffix(s, "0s")
+	}
+	if strings.HasSuffix(s, "h0m") {
+		s = strings.TrimSuffix(s, "0m")
+	}
+	return s
+}
 
 // emission es el intervalo entre requests a ritmo sostenido.
 func (l Limit) emission() time.Duration { return l.Period / time.Duration(l.Count) }

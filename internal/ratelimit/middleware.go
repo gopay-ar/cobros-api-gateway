@@ -19,16 +19,32 @@ type Rule struct {
 	Key func(*http.Request) (string, bool)
 }
 
+// CorrelationHeader es el header que comparten gateway y cobros-platform para
+// seguir un request en los logs de ambos.
+const CorrelationHeader = "X-Correlation-ID"
+
 // keyPrefix es el espacio de nombres del gateway en Redis.
 const keyPrefix = "rl:"
+
+// Options configura el middleware.
+type Options struct {
+	// FailOpen: si el limitador falla (Redis caído), el request sigue sin
+	// límite; si no, se responde 503.
+	FailOpen bool
+	Logger   *slog.Logger
+	// ClientIP resuelve la IP del cliente para los logs (opcional).
+	ClientIP func(*http.Request) string
+}
 
 // Middleware aplica las reglas en orden. El primer límite superado corta el
 // request con 429; si todas pasan, se informan los headers de la regla con
 // menos margen.
-//
-// Si el limitador falla (Redis caído): con failOpen el request sigue, sin
-// límite; sin failOpen se responde 503.
-func Middleware(limiter Limiter, rules []Rule, failOpen bool, logger *slog.Logger) func(http.Handler) http.Handler {
+func Middleware(limiter Limiter, rules []Rule, opts Options) func(http.Handler) http.Handler {
+	failOpen, logger := opts.FailOpen, opts.Logger
+	clientIP := opts.ClientIP
+	if clientIP == nil {
+		clientIP = func(r *http.Request) string { return r.RemoteAddr }
+	}
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			var tightest *applied
@@ -39,7 +55,8 @@ func Middleware(limiter Limiter, rules []Rule, failOpen bool, logger *slog.Logge
 				}
 				res, err := limiter.Allow(r.Context(), keyPrefix+rule.Name+":"+key, rule.Limit)
 				if err != nil {
-					logger.Error("rate limit: limiter error", "rule", rule.Name, "fail_open", failOpen, "error", err)
+					logger.Error("rate limit: limiter error", "rule", rule.Name, "fail_open", failOpen,
+						"client_ip", clientIP(r), "error", err)
 					if failOpen {
 						continue
 					}
@@ -48,8 +65,11 @@ func Middleware(limiter Limiter, rules []Rule, failOpen bool, logger *slog.Logge
 				}
 				a := &applied{rule: rule, res: res}
 				if !res.Allowed {
+					// key identifica al llamador limitado: la IP, tenant:<tid>,
+					// apikey:<prefix> o el hash de la cuenta (nunca el email).
 					logger.Warn("rate limit: exceeded", "rule", rule.Name, "limit", rule.Limit.String(),
-						"path", r.URL.Path, "retry_after", res.RetryAfter)
+						"key", key, "client_ip", clientIP(r), "method", r.Method, "path", r.URL.Path,
+						"correlation_id", r.Header.Get(CorrelationHeader), "retry_after_s", ceilSeconds(res.RetryAfter))
 					a.setHeaders(w)
 					w.Header().Set("Retry-After", strconv.Itoa(ceilSeconds(res.RetryAfter)))
 					writeError(w, http.StatusTooManyRequests, "too many requests")

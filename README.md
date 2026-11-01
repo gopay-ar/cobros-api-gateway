@@ -53,6 +53,19 @@ Retry-After: 90
 
 Por defecto se usa la IP de la conexión y se **ignora** `X-Forwarded-For`, que el cliente puede falsificar para rotar de IP en cada request. Si hay un balanceador delante, declarar sus redes en `TRUSTED_PROXIES` (`10.0.0.0/8,192.168.1.10`). En ese caso el gateway recorre `X-Forwarded-For` de derecha a izquierda y toma la primera IP que no es de confianza. Hacia cobros, `X-Forwarded-For` se reemplaza por esa IP.
 
+## Logs
+
+JSON (slog) por stdout, con dos tipos de línea:
+
+```json
+{"level":"INFO","msg":"request","method":"POST","path":"/api/v1/auth/login","status":429,"duration_ms":0,"bytes":30,"client_ip":"203.0.113.7","correlation_id":"96115c06…"}
+{"level":"WARN","msg":"rate limit: exceeded","rule":"login_account","limit":"10/15m","key":"3d86ccb5…","client_ip":"203.0.113.7","method":"POST","path":"/api/v1/auth/login","correlation_id":"96115c06…","retry_after_s":90}
+```
+
+- **`request`:** una línea por request (los 5xx salen como `ERROR`). La ruta va sin query string, que puede traer datos del cliente. Los health checks del gateway no se registran.
+- **`rate limit: exceeded`:** indica quién fue limitado. `key` es la IP, `tenant:<tid>`, `apikey:<prefix>` o el hash de la cuenta del login, nunca el email.
+- **`X-Correlation-ID`:** el gateway reusa el que manda el cliente (si es razonable) o genera uno. Lo reenvía a cobros-platform, que lo usa en sus eventos, y lo devuelve en la respuesta. Con ese ID se sigue un request en los logs de los dos servicios.
+
 ## Configuración
 
 | Variable | Default | Descripción |

@@ -1,7 +1,9 @@
 package ratelimit
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
@@ -38,7 +40,7 @@ func static(key string) func(*http.Request) (string, bool) {
 func run(t *testing.T, limiter Limiter, rules []Rule, failOpen bool) (*httptest.ResponseRecorder, bool) {
 	t.Helper()
 	reached := false
-	h := Middleware(limiter, rules, failOpen, discard)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	h := Middleware(limiter, rules, Options{FailOpen: failOpen, Logger: discard})(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		reached = true
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -116,4 +118,33 @@ func TestMiddleware_LimiterError(t *testing.T) {
 			t.Fatalf("status=%d reached=%v", rec.Code, reached)
 		}
 	})
+}
+
+// El WARN de un rechazo identifica a quién se limitó y desde dónde: sin eso
+// se sabía que hubo un ataque pero no de quién.
+func TestMiddleware_DenialLogIdentifiesCaller(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&buf, nil))
+	limiter := &fakeLimiter{results: map[string]Result{"rl:login:acct-hash": {Allowed: false, RetryAfter: 3 * time.Second}}}
+	rules := []Rule{{Name: "login", Limit: Limit{Count: 10, Period: 15 * time.Minute}, Key: static("acct-hash")}}
+
+	h := Middleware(limiter, rules, Options{Logger: logger, ClientIP: func(*http.Request) string { return "203.0.113.7" }})(http.NotFoundHandler())
+	r := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", nil)
+	r.Header.Set(CorrelationHeader, "c-42")
+	h.ServeHTTP(httptest.NewRecorder(), r)
+
+	var entry map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &entry); err != nil {
+		t.Fatalf("log is not JSON: %q", buf.String())
+	}
+	want := map[string]any{
+		"msg": "rate limit: exceeded", "rule": "login", "limit": "10/15m", "key": "acct-hash",
+		"client_ip": "203.0.113.7", "method": "POST", "path": "/api/v1/auth/login",
+		"correlation_id": "c-42", "retry_after_s": float64(3),
+	}
+	for k, v := range want {
+		if entry[k] != v {
+			t.Errorf("%s = %v, want %v", k, entry[k], v)
+		}
+	}
 }

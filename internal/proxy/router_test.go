@@ -256,3 +256,13 @@ func TestGateway_UpstreamDown(t *testing.T) {
 		t.Fatalf("status = %d body = %s", rec.Code, rec.Body)
 	}
 }
+
+// El mismo correlation ID queda en el log del gateway y llega a cobros.
+func TestGateway_CorrelationIDReachesCobros(t *testing.T) {
+	e := newEnv(t, nil)
+	rec := e.do(http.MethodGet, "/api/v1/x", "", "203.0.113.1", nil)
+	id := rec.Header().Get("X-Correlation-ID")
+	if len(id) != 32 || e.lastReq.Header.Get("X-Correlation-ID") != id {
+		t.Fatalf("response id %q, upstream id %q", id, e.lastReq.Header.Get("X-Correlation-ID"))
+	}
+}

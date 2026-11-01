@@ -67,7 +67,9 @@ func NewHandler(d Deps) http.Handler {
 		{Name: "tenant", Limit: l.Tenant, Key: callers.Caller},
 		{Name: "global_ip", Limit: l.GlobalIP, Key: byIP},
 	}
-	limited := ratelimit.Middleware(d.Limiter, rules, d.Config.RateLimitFailOpen, d.Logger)(upstream)
+	limited := ratelimit.Middleware(d.Limiter, rules, ratelimit.Options{
+		FailOpen: d.Config.RateLimitFailOpen, Logger: d.Logger, ClientIP: ips.IP,
+	})(upstream)
 
 	mux := http.NewServeMux()
 	// Health del propio gateway: no consultan a cobros-platform, para que su
@@ -90,7 +92,7 @@ func NewHandler(d Deps) http.Handler {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "redis": "up"})
 	})
 	mux.Handle("/", limited)
-	return mux
+	return withCorrelationID(accessLog(d.Logger, ips.IP, mux))
 }
 
 // newReverseProxy ignora el error de url.Parse: config.Validate ya garantiza
@@ -115,8 +117,9 @@ func newReverseProxy(target string, ips *clientip.Resolver) *httputil.ReversePro
 			}
 			pr.Out.Header.Set("X-Forwarded-Proto", proto)
 		},
-		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, err error) {
-			slog.Error("proxy: upstream error", "error", err)
+		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
+			slog.Error("proxy: upstream error", "path", r.URL.Path,
+				"correlation_id", r.Header.Get(ratelimit.CorrelationHeader), "error", err)
 			writeJSON(w, http.StatusBadGateway, map[string]string{"error": "upstream unavailable"})
 		},
 	}

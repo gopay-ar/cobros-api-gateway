@@ -25,3 +25,21 @@ func TestParseLimit(t *testing.T) {
 		}
 	}
 }
+
+// Los logs muestran el límite como se configura, no "10/15m0s".
+func TestLimit_String(t *testing.T) {
+	cases := map[Limit]string{
+		{Count: 10, Period: 15 * time.Minute}:             "10/15m",
+		{Count: 5, Period: time.Hour}:                     "5/1h",
+		{Count: 1, Period: 90 * time.Minute}:              "1/1h30m",
+		{Count: 300, Period: 30 * time.Second}:            "300/30s",
+		{Count: 10, Period: time.Minute + 30*time.Second}: "10/1m30s",
+		{Count: 2, Period: time.Hour + 30*time.Second}:    "2/1h0m30s",
+		{Count: 1000, Period: time.Second}:                "1000/1s",
+	}
+	for l, want := range cases {
+		if got := l.String(); got != want {
+			t.Errorf("%#v.String() = %q, want %q", l, got, want)
+		}
+	}
+}
